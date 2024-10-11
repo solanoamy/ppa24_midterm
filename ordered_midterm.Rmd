@@ -1,0 +1,581 @@
+---
+title: "MUSA 508 Midterm"
+author: "Alice Kansiime, Amy Solano"
+date: 'October 2024'
+output: html_document
+---
+
+
+
+
+```{r setup, include=FALSE}
+
+# You can set some global options for knitting chunks
+
+knitr::opts_chunk$set(echo = TRUE)
+options(scipen = 999)
+
+# Load some libraries
+
+library(tidyverse)
+library(sf)
+library(spdep)
+library(caret)
+library(ckanr)
+library(FNN)
+library(grid)
+library(gridExtra)
+library(ggcorrplot) # plot correlation plot
+library(corrr)      # another way to plot correlation plot
+library(kableExtra)
+library(jtools)     # for regression model plots
+library(ggstance) # to support jtools plots
+library(ggpubr)    # plotting R^2 value on ggplot point scatter
+library(broom.mixed) # needed for effects plots
+library(ggnewscale)
+library(knitr)
+library(tidycensus)
+library(scales)
+library(pander)
+
+# functions and data directory
+root.dir = "https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/DATA/"
+
+source("https://raw.githubusercontent.com/urbanSpatial/Public-Policy-Analytics-Landing/master/functions.r")
+
+amPal <- c("#D0E5F1", "#9dbccf", "#708ab2","#445795","#172578")
+
+```
+
+
+
+```{r load_data}
+studentData <- st_read("studentData.geojson") %>%
+  st_make_valid()
+
+phlhoods <- 
+  st_read("https://github.com/opendataphilly/open-geo-data/raw/refs/heads/master/philadelphia-neighborhoods/philadelphia-neighborhoods.geojson") %>%
+  st_transform(4326) %>%
+  st_make_valid()
+
+
+crimes23 <- read_csv("incidents_part1_part2.csv")
+
+
+crimes_sf <- crimes23 %>% 
+  dplyr::select(text_general_code,lat, lng) %>%
+  na.omit() %>%
+  st_as_sf(coords = c('lng', 'lat')) %>%
+  st_set_crs(4326) %>%
+  distinct()
+
+hotTracts <- st_read("https://opendata.arcgis.com/api/v3/datasets/6afc1177d0cc49dc8c731532b95ccd1f_0/downloads/data?format=geojson&spatialRefId=4326&where=1%3D1")
+
+```
+
+
+```{r sale_price_map}
+
+salePrice <- ggplot() +
+  geom_sf(data=phlhoods, fill="grey90")+
+  geom_sf(data = studentData, aes(colour = q5(sale_price), size=0.7), 
+          show.legend = "point", size = 0.5) +
+  guides(color = guide_legend(override.aes = list(size = 3) ) )+
+  scale_colour_manual(values = amPal,
+                   labels=qBr(studentData,"sale_price"),
+                   name="Sale Price") +
+  labs(title="Sale Prices, PHL",
+       subtitle = "In USD, Quintile Breaks") +
+  theme_void()
+
+```
+
+
+
+```{r crimes_table}
+
+phlCrimetype <- crimes_sf %>% 
+  group_by(text_general_code) %>%
+  summarize(count = n()) %>%
+  arrange(-count) %>% 
+  kable() %>%
+  kable_styling()
+
+phlCrimetype
+
+```
+
+
+```{r crime_map_grid}
+theftsMap <- ggplot() + geom_sf(data = phlhoods, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filter(crimes_sf, text_general_code=="Thefts"))), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_gradient(low = "#25CB10", high = "#FA7800", 
+                      breaks=c(0.000000003,0.00000003),
+                      labels=c("Minimum","Maximum"), name = "Density") +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of Thefts, Philadelphia") +
+  mapTheme()
+
+assaultsMap <- ggplot() + geom_sf(data = phlhoods, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filter(crimes_sf, !grepl("Assault|Assaults", text_general_code)))), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_gradient(low = "#25CB10", high = "#FA7800", 
+                      breaks=c(0.000000003,0.00000003),
+                      labels=c("Minimum","Maximum"), name = "Density") +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of Assaults (all types), Philadelphia") +
+  mapTheme()
+
+allThefts <- ggplot() + geom_sf(data = phlhoods, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filter(crimes_sf, !grepl("Theft|Thefts", text_general_code)))), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_gradient(low = "#25CB10", high = "#FA7800", 
+                      breaks=c(0.000000003,0.00000003),
+                      labels=c("Minimum","Maximum"), name = "Density") +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of Thefts (all types), Philadelphia") +
+  mapTheme()
+
+vandalismMap <- ggplot() + geom_sf(data = phlhoods, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filter(crimes_sf, text_general_code=="Vandalism/Criminal Mischief"))), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_gradient(low = "#25CB10", high = "#FA7800", 
+                      breaks=c(0.000000003,0.00000003),
+                      labels=c("Minimum","Maximum"), name = "Density") +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of vandalism, Philadelphia") +
+  mapTheme()
+
+othersMap <- ggplot() + geom_sf(data = phlhoods, fill = "grey40") +
+  stat_density2d(data = data.frame(st_coordinates(filter(crimes_sf, text_general_code=="All Other Offenses"))), 
+                 aes(X, Y, fill = ..level.., alpha = ..level..),
+                 size = 0.01, bins = 40, geom = 'polygon') +
+  scale_fill_gradient(low = "#25CB10", high = "#FA7800", 
+                      breaks=c(0.000000003,0.00000003),
+                      labels=c("Minimum","Maximum"), name = "Density") +
+  scale_alpha(range = c(0.00, 0.35), guide = FALSE) +
+  labs(title = "Density of other offenses, Philadelphia") +
+  mapTheme()
+
+grid.arrange(salePrice, theftsMap, allThefts, assaultsMap, vandalismMap, othersMap, nrow=2)
+
+```
+
+
+
+```{r filter_crime}
+keyList <- c("Assault", "Assaults", "Theft", "Thefts")
+
+crimeKey <- paste(keyList, collapse = "|")
+
+theftsAndassaults <- crimes_sf %>% 
+                filter(., grepl(crimeKey, text_general_code) == TRUE) %>%
+  na.omit() %>%
+  dplyr::select(geometry)
+```
+
+
+
+```{r knn}
+studentData <-
+  studentData %>% 
+    mutate(
+      crime_nn1 = nn_function(st_coordinates(studentData), 
+                              st_coordinates(theftsAndassaults), k = 1),
+      
+      crime_nn2 = nn_function(st_coordinates(studentData), 
+                              st_coordinates(theftsAndassaults), k = 2), 
+      
+      crime_nn3 = nn_function(st_coordinates(studentData), 
+                              st_coordinates(theftsAndassaults), k = 3), 
+      
+      crime_nn4 = nn_function(st_coordinates(studentData), 
+                              st_coordinates(theftsAndassaults), k = 4), 
+      
+      crime_nn5 = nn_function(st_coordinates(studentData), 
+                              st_coordinates(theftsAndassaults), k = 5))
+```
+
+```{r subset_data}
+to.remove <- c("beginning_point","book_and_page","category_code","category_code_description","cross_reference",
+               "date_exterior_condition","exempt_land", "fireplaces","frontage","fuel", "general_construction",
+               "house_extension", "location", "mailing_address_1", "mailing_address_2", "mailing_care_of",
+               "mailing_city_state", "mailing_street","mailing_zip", "number_of_rooms", "other_building",
+               "owner_1", "owner_2","parcel_number","parcel_shape","quality_grade","recording_date","registry_number",
+               "sale_date", "separate_utilities", "sewer","site_type","state_code", "suffix", "topography",
+               "type_heater", "sale_year")
+`%ni%` <- Negate(`%in%`)
+phl.sf <- subset(studentData,select = names(studentData) %ni% to.remove)
+```
+
+
+```{r crime_buffer}
+phl.sf$crimesBuffer <- phl.sf %>%
+    st_buffer(805) %>%
+    aggregate(mutate(theftsAndassaults, counter = 1),., sum) %>%
+    pull(counter)
+```
+
+
+```{r join_sf}
+
+phl.sf <- st_join(phl.sf, hotTracts)
+
+phl.sf <- st_join(phl.sf, phlhoods)
+
+phl.sf <- phl.sf %>%
+  mutate(central_air = ifelse(central_air=="Y","Y","N"),
+         building_age = 2023 - year_built) %>%
+  drop_na(central_air)
+
+```
+
+
+```{r uni_variate_Regression}
+phl_sub4m <- st_drop_geometry(phl.sf) %>% 
+  filter(sale_price <= 4000000) 
+
+cor.test(phl_sub4m$hvi_score,
+         phl_sub4m$sale_price, 
+         method = "pearson")
+
+ggscatter(phl_sub4m,
+          x = "hvi_score",
+          y = "sale_price",
+          add = "reg.line") +
+  stat_cor(label.y = 4500000)+
+  scale_x_continuous(breaks = seq(-7, 7, 0.5))+
+  scale_y_continuous(breaks = seq(0, 4000000, 250000),
+                     labels = scales::dollar_format())
+
+```
+
+
+
+
+```{r corr_matrix}
+numericPhl <- 
+  select_if(st_drop_geometry(phl.sf), is.numeric) %>% na.omit()
+
+ggcorrplot(
+  round(cor(numericPhl), 1), 
+  p.mat = cor_pmat(numericPhl),
+  colors = c("#25CB10", "white", "#FA7800"),
+  type="lower",
+  insig = "blank") +  
+    labs(title = "Correlation across numeric variables") 
+
+```
+
+
+
+```{r condition_map}
+condition <- ggplot() +
+  geom_sf(data=phlhoods, fill="grey90")+
+  geom_sf(data = phl.sf, aes(color=exterior_condition), alpha=0.8)+
+  scale_colour_distiller(palette="Accent",name=NULL,labels = c("New Construction","Rehabilitated","Above Average",
+                                     "Rehabilitated again","Average","Below Average","Vacant"),guide="legend")+
+  guides(color = guide_legend(override.aes = list(size = 3) ) )+
+  labs(title="Exterior condition of properties")+
+  theme_void()
+
+grid.arrange(salePrice, condition, nrow=1)
+
+```
+
+```{r AC_boxplot}
+ggplot(phl.sf, aes(x=central_air,y=sale_price, group=central_air, color=central_air))+
+  geom_boxplot()+
+  geom_hline(yintercept = medSale, color="red")+
+  scale_y_continuous(n.breaks=10,labels = scales::dollar_format())+
+  scale_color_manual(values=c("black","royalblue"))+
+  coord_flip()+
+  labs(title="Central Air and Sale Price")+
+  theme_linedraw()
+
+ggplot(phl_sub4m, aes(x=central_air,y=sale_price, group=central_air, color=central_air))+
+  geom_boxplot()+
+  geom_hline(yintercept = medSale, color="red")+
+  scale_y_continuous(n.breaks=10,labels = scales::dollar_format())+
+  scale_color_manual(values=c("black","royalblue"))+
+  coord_flip()+
+  labs(title="Central Air and Sale Price (under 4 million)")+
+  theme_linedraw()
+```
+
+
+```{r preparing_data_reg}
+#removing data from neighborhoods with few sales
+hoods.remove <- c("CHINATOWN","EAST_PARK", "UNIVERSITY_CITY", "CRESTMONT_FARMS", "WOODLAND_TERRACE", "WISSAHICKON_PARK")
+
+modelling <- phl.sf %>%
+  filter(toPredict=="MODELLING" & NAME %ni% hoods.remove) %>%
+  na.omit()
+
+
+phl.inTrain <- createDataPartition(
+              y = paste(modelling$NAME.x, modelling$number_stories, 
+                        modelling$exterior_condition, modelling$central_air), 
+              p = .60, list = FALSE)
+
+phl.training <- modelling[phl.inTrain,] 
+phl.test <- modelling[-phl.inTrain,]  
+```
+
+
+```{r base_train}
+regphl.training <- 
+  lm(sale_price ~ ., data = as.data.frame(phl.training) %>% 
+                             dplyr::select(sale_price, total_livable_area, building_age,
+                                           hsi_score, crimesBuffer, depth))
+
+summary(regphl.training)
+```
+
+
+```{r base_test}
+phl.test1 <-
+  phl.test %>%
+  mutate(Regression = "Baseline Regression",
+         SalePrice.Predict = predict(regphl.training, phl.test),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / sale_price) %>%
+  filter(sale_price < 4000000) 
+
+```
+
+
+```{r mean_abs_error}
+mean(phl.test1$SalePrice.AbsError, na.rm = T)
+```
+
+```{r mape_test}
+mean(phl.test1$SalePrice.APE, na.rm = T)
+```
+
+
+```{r cross_validation}
+fitControl <- trainControl(method = "cv", number = 100)
+set.seed(825)
+
+phlreg.cv <- 
+  train(sale_price ~ ., data = st_drop_geometry(modelling) %>% 
+                                dplyr::select(sale_price, total_livable_area, building_age,
+                                           hsi_score, crimesBuffer, depth), 
+     method = "lm", trControl = fitControl, na.action = na.pass)
+
+phlreg.cv
+
+```
+
+
+```{r cv_table}
+phlreg.cv$resample[1:5,] %>%
+  pander()
+```
+
+
+```{r lag_model}
+phlcoords <- st_coordinates(modelling) 
+
+phlneighborList <- knn2nb(knearneigh(phlcoords, 5))
+
+phlspatialWeights <- nb2listw(phlneighborList, style="W")
+
+modelling$lagPrice <- lag.listw(phlspatialWeights, modelling$sale_price)
+
+```
+
+```{r lag_test_map}
+coords.test1 <-  st_coordinates(phl.test1) 
+
+neighborList.test1 <- knn2nb(knearneigh(coords.test1, 5))
+
+spatialWeights.test1 <- nb2listw(neighborList.test1, style="W")
+ 
+
+phl.test1 %>% 
+  mutate(lagPriceError = lag.listw(spatialWeights.test1, SalePrice.Error)) %>%
+  ggplot()+
+  geom_point(aes(x =lagPriceError, y =SalePrice.Error), color = "orange") +
+  labs(title = "Spatial Lag of Sale Price Error",
+       x = "Lag of Sale Price Error",
+       y = "Sale Price Error") +
+  theme_minimal()
+
+ggplot(modelling)+
+  geom_point(aes(x=lagPrice, y=sale_price))+
+  theme_minimal()
+
+```
+
+
+```{r pearson_test}
+
+pearsons_test1 <- 
+  phl.test1 %>% 
+  mutate(lagPriceError = lag.listw(spatialWeights.test1, SalePrice.Error))
+
+cor.test(pearsons_test1$lagPriceError,
+         pearsons_test1$SalePrice.Error, 
+         method = "pearson")
+
+```
+
+
+```{r moran_test}
+moranTest1 <- moran.mc(phl.test1$SalePrice.Error, 
+                      spatialWeights.test1, nsim = 999)
+
+ggplot(as.data.frame(moranTest1$res[c(1:999)]), aes(moranTest1$res[c(1:999)])) +
+  geom_histogram(binwidth = 0.01) +
+  geom_vline(aes(xintercept = moranTest1$statistic), colour = "orange",size=1) +
+  scale_x_continuous(limits = c(-1, 1)) +
+  labs(title="Observed and permuted Moran's I",
+       subtitle= "Observed Moran's I in orange",
+       x="Moran's I",
+       y="Count") +
+  theme_minimal()
+
+```
+
+
+```{r neighborhood_predict_list}
+phl.test1 %>%
+as.data.frame() %>%
+  group_by(NAME) %>%
+    summarize(meanPrediction = mean(SalePrice.Predict),
+              meanPrice = mean(sale_price)) %>%
+      pander(caption = "Mean Predicted and Actual Sale Price by Neighborhood")
+
+```
+
+```{r reg_nhood}
+reg.nhood1 <- lm(sale_price ~ ., data = as.data.frame(phl.training) %>% 
+                                 dplyr::select(NAME, sale_price, total_livable_area, building_age,
+                                           hsi_score, crimesBuffer, depth))
+
+summary(reg.nhood1)
+```
+
+
+```{r nhood_test}
+phl.test.nhood <-
+  phl.test1 %>%
+  mutate(Regression = "Neighborhood Effects",
+         SalePrice.Predict = predict(reg.nhood1, phl.test1),
+         SalePrice.Error = SalePrice.Predict - sale_price,
+         SalePrice.AbsError = abs(SalePrice.Predict - sale_price),
+         SalePrice.APE = (abs(SalePrice.Predict - sale_price)) / sale_price) %>%
+  filter(sale_price < 4000000) 
+```
+
+```{r compare_reg}
+bothReg <- 
+  rbind(
+    dplyr::select(phl.test1, starts_with("SalePrice"), sale_price, Regression, NAME) %>%
+      mutate(lagPriceError = lag.listw(spatialWeights.test1, SalePrice.Error)),
+    dplyr::select(phl.test.nhood, starts_with("SalePrice"), sale_price, Regression, NAME) %>%
+      mutate(lagPriceError = lag.listw(spatialWeights.test1, SalePrice.Error)))  
+
+```
+
+
+```{r compate_reg_table}
+st_drop_geometry(bothReg) %>%
+  gather(Variable, Value, -Regression, -NAME) %>%
+  filter(Variable == "SalePrice.AbsError" | Variable == "SalePrice.APE") %>%
+  group_by(Regression, Variable) %>%
+    summarize(meanValue = mean(Value, na.rm = T)) %>%
+      spread(Variable, meanValue) %>%
+    pander(caption = "Mean Absolute Error and Absolute Percentage Error by Regression")
+```
+
+```{r compare_reg_map}
+bothReg %>%
+  dplyr::select(SalePrice.Predict, sale_price, Regression) %>%
+    ggplot(aes(sale_price, SalePrice.Predict)) +
+  geom_point() +
+  stat_smooth(aes(sale_price, sale_price), 
+             method = "lm", se = FALSE, size = 1, colour="orange") + 
+  stat_smooth(aes(SalePrice.Predict, sale_price), 
+              method = "lm", se = FALSE, size = 1, colour="olivedrab") +
+  facet_wrap(~Regression) +
+  labs(title="Predicted sale price as a function of observed price",
+       subtitle="Orange line represents a perfect prediction; Green line represents prediction") +
+  theme_minimal()
+```
+
+
+```{r both_reg_MAPE}
+st_drop_geometry(bothReg) %>%
+  group_by(Regression, NAME) %>%
+  summarize(mean.MAPE = mean(SalePrice.APE, na.rm = T)) %>%
+  ungroup() %>% 
+  left_join(phlhoods, by = c("NAME" = "NAME")) %>%
+    st_sf() %>%
+    ggplot() + 
+      geom_sf(aes(fill = mean.MAPE)) +
+      geom_sf(data = bothReg, color = "black", size = .5) +
+      facet_wrap(~Regression) +
+      scale_fill_gradient(low = palette5[1], high = palette5[5],
+                          name = "MAPE") +
+      labs(title = "Mean test set MAPE by neighborhood") +
+      theme_void()
+
+```
+
+```{r load_ACS, results='hide'}
+
+census_api_key("d70aee97262921b3e49924658b25a568736d3549", overwrite = TRUE)
+
+tracts22 <- 
+  get_acs(geography = "tract", 
+          variables = c("B01001_001E","B01001A_001E","B06011_001"), 
+          year = 2022, 
+          state=42, 
+          county=101, 
+          geometry=TRUE, 
+          output = "wide") %>%
+  st_transform(4326) %>%
+  rename(TotalPop = B01001_001E,
+         NumberWhites = B01001A_001E,
+         Median_Income = B06011_001E) %>%
+  mutate(percentWhite = NumberWhites / TotalPop,
+         raceContext = ifelse(percentWhite > .5, "Majority White", "Majority Non-White"),
+         incomeContext = ifelse(Median_Income > 37290, "High Income", "Low Income"))
+```
+
+
+```{r race_income_context}
+grid.arrange(ncol = 2,
+  ggplot() + geom_sf(data = na.omit(tracts22), aes(fill = raceContext), color = "transparent") +
+    scale_fill_manual(values = c("slateblue", "darkgoldenrod2"), name="Race Context") +
+    labs(title = "Race Context") +
+    theme_void() + theme(legend.position="bottom"), 
+  ggplot() + geom_sf(data = na.omit(tracts22), aes(fill = incomeContext), color = "transparent") +
+    scale_fill_manual(values = c("slateblue", "darkgoldenrod2"), name="Income Context") +
+    labs(title = "Income Context") +
+    theme_void() + theme(legend.position="bottom"))
+
+```
+
+
+```{r reg_income_race}
+st_join(bothReg, tracts22) %>% 
+  filter(!is.na(incomeContext)) %>%
+  group_by(Regression, incomeContext) %>%
+  summarize(mean.MAPE = 100*(mean(SalePrice.APE, na.rm = T))) %>%
+  st_drop_geometry() %>%
+  spread(incomeContext, mean.MAPE) %>%
+  pander(caption = "Test set MAPE by neighborhood income context")
+```
+
+
+
